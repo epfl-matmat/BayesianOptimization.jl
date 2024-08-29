@@ -1,10 +1,11 @@
 ### acquisition optimization setup
+using Infiltrator
 
 # TODO: does it really need to be Type here?
-function defaultoptions(::Type{<:GPE}, ::Type{<:AbstractAcquisition})
+function defaultoptions(::Any, ::Type{<:AbstractAcquisition})
     (method = :LD_LBFGS, restarts = 10, maxeval = 2000)
 end
-function defaultoptions(::Type{<:GPE}, ::Type{ThompsonSamplingSimple})
+function defaultoptions(::Any, ::Type{ThompsonSamplingSimple})
     (method = :GN_DIRECT_L, restarts = 1, maxeval = 2000)
 end
 
@@ -57,6 +58,10 @@ function acquire_max(opt, lowerbounds, upperbounds, restarts)
     seq = ScaledLHSIterator(lowerbounds, upperbounds, restarts)
     for x0 in seq
         f, x, ret = NLopt.optimize(opt, x0)
+        @infiltrate
+        println("Inside optimization routine")
+        println(f)
+        println(x)
         ret == NLopt.FORCED_STOP &&
             @warn("NLopt returned FORCED_STOP while optimizing the acquisition function.")
         if f > maxf

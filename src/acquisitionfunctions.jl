@@ -4,7 +4,10 @@ setparams!(a, model) = nothing
 function acquisitionfunction(a, model)
     x -> begin
         μ, σ² = mean_var(model, x)
+        println("Acquisition")
+        println(μ)
         a.(μ, σ²)
+        println("Acquisition")
     end
 end
 
@@ -90,6 +93,8 @@ function UpperConfidenceBound(; scaling = BrochuBetaScaling(0.1), βt = 1.0)
 end
 function setparams!(a::UpperConfidenceBound{BrochuBetaScaling}, model)
     D, nobs = dims(model)
+    println(D)
+    println(nobs)
     nobs == 0 && (nobs = 1)
     a.βt = sqrt(2 * log(nobs^(D / 2 + 2) * π^2 / (3 * a.scaling.δ)))
 end
