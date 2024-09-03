@@ -8,6 +8,13 @@ function defaultoptions(::Type{<:GPE}, ::Type{ThompsonSamplingSimple})
     (method = :GN_DIRECT_L, restarts = 1, maxeval = 2000)
 end
 
+function defaultoptions(::Type{<:Any}, ::Type{<:AbstractAcquisition})
+    (method = :LD_LBFGS, restarts = 10, maxeval = 2000)
+end
+function defaultoptions(::Type{<:Any}, ::Type{ThompsonSamplingSimple})
+    (method = :GN_DIRECT_L, restarts = 1, maxeval = 2000)
+end
+
 function wrap_gradient(f)
     (x, g) -> begin
         res = DiffResults.DiffResult(0.0, g)
