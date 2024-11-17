@@ -57,6 +57,12 @@ include("models/gp.jl")
 @enum Sense Min=-1 Max=1
 @enum Verbosity Silent=0 Timings=1 Progress=2
 
+""" Maximum data seen by the model and the corresponding point. 
+"""
+maxy(model) = isempty(model.y) ? -Inf : maximum(model.y)
+argmaxy(model) = isempty(model.y) ? zeros(model.dim) :
+                        Array(model.x[:, argmax(model.y)])
+
 mutable struct BOpt{F, M, A, AO, MO, Ti}
     func::F
     sense::Sense
@@ -115,9 +121,11 @@ function BOpt(func,
     all(lowerbounds .<= upperbounds) ||
         throw(ArgumentError("lowerbounds are not pointwise less than or eqal to upperbounds, they were possibly passed in the wrong order"))
 
-    current_optimum = isempty(model.y) ? -Inf * Int(sense) : Int(sense) * maximum(model.y)
-    current_optimizer = isempty(model.y) ? zero(float.(lowerbounds)) :
-                        Array(model.x[:, argmax(model.y)])
+    # Needed for compatiblity reasons.
+    model.dim = size(lowerbounds)[1]
+    
+    current_optimum = Int(sense) * maxy(model)
+    current_optimizer = argmaxy(model)
     BOpt(func,
          sense,
          model,
@@ -157,89 +165,6 @@ function show(io::IO, mime::MIME"text/plain", o::BOpt)
     end
 end
 
-mutable struct GradientBOpt{F, M, A, AO, MO, Ti}
-    func::F
-    output_type
-    sense::Sense
-    model::M
-    acquisition::A
-    acquisitionoptions::AO
-    modeloptimizer::MO
-    lowerbounds::Array{Float64, 1}
-    upperbounds::Array{Float64, 1}
-    observed_optimum::Float64
-    observed_optimizer::Array{Float64, 1}
-    model_optimum::Float64
-    model_optimizer::Array{Float64, 1}
-    iterations::IterationCounter
-    duration::DurationCounter
-    opt::NLopt.Opt
-    verbosity::Verbosity
-    initializer::Ti
-    repetitions::Int
-    timeroutput::TimerOutput
-end
-"""
-    BOpt(func, model, acquisition, modeloptimizer, lowerbounds, upperbounds;
-    sense = Max, maxiterations = 10^4, maxduration = Inf,
-    acquisitionoptions = NamedTuple(), repetitions = 1,
-    verbosity = Progress,
-    initializer_iterations = 5*length(lowerbounds),
-    initializer = ScaledSobolIterator(lowerbounds, upperbounds,
-    initializer_iterations))
-"""
-function GradientBOpt(func,
-              output_type,
-              model,
-              acquisition,
-              modeloptimizer,
-              lowerbounds,
-              upperbounds;
-              sense = Max,
-              maxiterations = 10^4,
-              maxduration = Inf,
-              acquisitionoptions = NamedTuple(),
-              repetitions = 1,
-              verbosity = Progress,
-              initializer_iterations = 5 * length(lowerbounds),
-              initializer = ScaledSobolIterator(lowerbounds, upperbounds,
-                                                initializer_iterations))
-    now = time()
-    acquisitionoptions = merge(defaultoptions(typeof(model), typeof(acquisition)),
-                               acquisitionoptions)
-    maxiterations < length(initializer) &&
-        throw(ArgumentError("maxiterations = $maxiterations < length(initializer) = $(length(initializer))"))
-
-    maxiterations >= 0 || throw(ArgumentError("maxiterations < 0"))
-    maxduration >= 0 || throw(ArgumentError("maxduration < 0"))
-    length(lowerbounds) == length(upperbounds) ||
-        throw(ArgumentError("length of lowerbounds does not match length of upperbounds"))
-    all(lowerbounds .<= upperbounds) ||
-        throw(ArgumentError("lowerbounds are not pointwise less than or eqal to upperbounds, they were possibly passed in the wrong order"))
-
-    current_optimum = isempty(model.y) ? -Inf * Int(sense) : Int(sense) * maximum(model.y)
-    current_optimizer = isempty(model.y) ? zero(float.(lowerbounds)) :
-                        Array(model.x[:, argmax(model.y)])
-    GradientBOpt(func,
-         output_type,
-         sense,
-         model,
-         acquisition,
-         acquisitionoptions,
-         modeloptimizer,
-         float.(lowerbounds),
-         float.(upperbounds),
-         current_optimum,
-         current_optimizer,
-         current_optimum,
-         copy(current_optimizer),
-         IterationCounter(0, 0, maxiterations),
-         DurationCounter(now, maxduration, now, now + maxduration),
-         nlopt_setup(acquisition, model, lowerbounds, upperbounds, acquisitionoptions),
-         verbosity, initializer, repetitions, TimerOutput())
-end
-
-
 function initialise_model!(o)
     ys = Float64[]
     xs = Vector{Float64}[]
@@ -255,21 +180,6 @@ function initialise_model!(o)
     @mytimeit o.timeroutput "model hyperparameter optimization" optimizemodel!(o.modeloptimizer,
                                                                                o.model)
 end
-function initialise_model!(o::GradientBOpt)
-    ys = Vector{o.output_type}()
-    xs = Vector{Float64}[]
-    for x in o.initializer
-        for j in 1:(o.repetitions)
-            push!(ys, _evaluate_function(o, x))
-            push!(xs, x)
-        end
-    end
-    o.iterations.i = o.iterations.c = length(ys) / o.repetitions
-    @mytimeit o.timeroutput "model update" update!(o.model, hcat(xs...), ys)
-    @mytimeit o.timeroutput "model hyperparameter optimization" optimizemodel!(o.modeloptimizer,
-                                                                               o.model)
-end
-
 
 """
     boptimize!(o::BOpt)
@@ -392,55 +302,6 @@ function merge_with_defaults(f, lowerbounds, upperbounds, optkwargs)
     args = (f, [params[k] for k in args_keys]..., lowerbounds, upperbounds)
     kwargs = NamedTuple((k, v) for (k, v) in pairs(params) if k in kwargs_keys)
     args, kwargs
-end
-
-
-isdone(o::GradientBOpt) = isdone(o.iterations) || isdone(o.duration)
-maxduration!(o::GradientBOpt, d) = maxduration!(o.duration, d)
-maxiterations!(o::GradientBOpt, N) = maxiterations!(o.iterations, N)
-
-function boptimize!(o::GradientBOpt)
-    init!(o.duration)
-    init!(o.iterations)
-    reset_timer!(o.timeroutput)
-    o.iterations.i == 0 && length(o.initializer) > 0 && initialise_model!(o)
-    while !isdone(o)
-        o.verbosity >= Progress &&
-            @info("$(now())\titeration: $(o.iterations.i)\tcurrent optimum: $(o.observed_optimum)")
-        setparams!(o.acquisition, o.model)
-        o.opt = nlopt_setup(o.acquisition, o.model, o.lowerbounds, o.upperbounds, o.acquisitionoptions)
-        @mytimeit o.timeroutput "acquisition" f, x=acquire_max(o.opt, o.lowerbounds,
-                                                               o.upperbounds,
-                                                               o.acquisitionoptions.restarts)
-        ys = Vector{o.output_type}()
-        step!(o.iterations)
-        for _ in 1:(o.repetitions)
-            y = _evaluate_function(o, x)
-            push!(ys, y)
-        end
-        @mytimeit o.timeroutput "model update" update!(o.model,
-                                                       hcat(fill(x, o.repetitions)...),
-                                                       ys)
-        @mytimeit o.timeroutput "model hyperparameter optimization" optimizemodel!(o.modeloptimizer,
-                                                                                   o.model)
-    end
-    o.opt = nlopt_setup(o.acquisition, o.model, o.lowerbounds, o.upperbounds, o.acquisitionoptions)
-    @mytimeit o.timeroutput "acquisition" o.model_optimum, o.model_optimizer=acquire_model_max(o)
-    o.duration.now = time()
-    o.verbosity >= Timings && @info(o.timeroutput)
-    (observed_optimum = o.observed_optimum,
-     observed_optimizer = o.observed_optimizer,
-     model_optimum = Int(o.sense) * o.model_optimum,
-     model_optimizer = o.model_optimizer)
-end
-
-function _evaluate_function(o::GradientBOpt, x)
-    @mytimeit o.timeroutput "function evaluation" y=Int(o.sense) * o.func(x)
-    if y.val > Int(o.sense) * o.observed_optimum
-        o.observed_optimum = Int(o.sense) * y.val
-        o.observed_optimizer = x
-    end
-    return y
 end
 
 end # module
